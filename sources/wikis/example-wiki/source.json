@@ -1,0 +1,22 @@
+{
+  "id": "wikis/a1b2c3d4e5f6",
+  "type": "wikis",
+  "url": "https://lastz-community.fandom.com/wiki/Shambler",
+  "title": "Shambler — Last Z Community Wiki",
+  "author": "Community Contributors",
+  "publishedAt": "2026-03-20T00:00:00Z",
+  "fetchedAt": "2026-04-29T11:15:00Z",
+  "contentHash": "sha256:b2c3d4e5f6789012",
+  "rawPath": "raw.md",
+  "rawBytes": 8234,
+  "extraction": {
+    "path": "extraction.md",
+    "model": "anthropic/claude-sonnet-4",
+    "extractorVersion": "v1",
+    "extractedAt": "2026-04-29T11:16:22Z",
+    "inputContentHash": "sha256:b2c3d4e5f6789012",
+    "status": "ok"
+  },
+  "ingesterVersion": "v1",
+  "notes": ""
+}

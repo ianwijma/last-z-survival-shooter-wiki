@@ -1,0 +1,20 @@
+[0:00] Hey everyone, welcome back to another Last Z guide. Today we're covering the M4A1 assault rifle and the best loadouts for Season 3.
+[0:15] The M4A1 has been a staple weapon since Season 1, and it's gotten some significant changes this season that I want to break down for you.
+[0:32] Let's start with the base stats. The M4A1 has a base damage of 28 per shot, which puts it right in the middle of the assault rifle category.
+[0:45] Magazine size is 30 rounds standard, and the fire rate is 700 RPM. Pretty standard stuff.
+[1:05] Now the reload time is where things get interesting. Base reload is 3.1 seconds, which is honestly a bit slow compared to the AK-47.
+[1:22] But here's the thing — with Fast Mag I, you're looking at 2.7 seconds. And with Fast Mag II, it drops all the way to 2.3 seconds.
+[1:45] That's a massive difference in close-quarters combat. I've been running Fast Mag II on my M4A1 for weeks now and it's been a game changer.
+[2:15] For attachments, I recommend starting with the Red Dot Sight for better target acquisition at medium range.
+[2:34] The Foregrip is essential for recoil control, especially if you're planning to use this in sustained firefights.
+[3:00] Now let's talk about the Season 3 changes. The developers introduced a new overheat mechanic that affects all automatic weapons.
+[3:22] After about 45 rounds of continuous fire, your weapon will start to overheat and you'll see a heat meter building up on screen.
+[3:45] Once overheated, your fire rate drops by 20% and accuracy takes a significant hit. So burst fire is now more important than ever.
+[4:10] The good news is that Fast Mag attachments stack additively with reload perks from the skill tree. So if you have the Quick Hands perk, you can get even faster reloads.
+[4:35] For my recommended loadout, I run: Red Dot Sight, Foregrip, Fast Mag II, and the Extended Barrel for that extra range.
+[5:10] Damage-wise, I've tested this extensively. The 28 base damage is consistent across all body shots. Headshots give you a 1.5x multiplier, so 42 damage per headshot.
+[5:45] Against armored enemies, you're looking at about 22 damage per body shot due to the armor reduction.
+[6:03] The overheat mechanic really changes how you approach engagements. You can't just hold down the trigger anymore.
+[6:30] I've found that 5-6 round bursts with a brief pause between them keeps the heat meter manageable.
+[6:45] One thing I should mention — I've heard rumors about a 5% damage buff in hotfix 1.4.2, but I haven't seen official confirmation on that yet.
+[7:10] Anyway, that wraps up the M4A1 guide for Season 3. Drop a comment if you have questions about specific attachments or playstyles.

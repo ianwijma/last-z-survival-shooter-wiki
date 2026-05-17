@@ -1,0 +1,14 @@
+{
+  "name": "last-z-survival-shooter-wiki",
+  "private": true,
+  "workspaces": [
+    "site",
+    "pipeline"
+  ],
+  "scripts": {
+    "pipeline": "bun run pipeline/src/cli.ts",
+    "dev": "bun run --cwd site dev",
+    "build": "bun run --cwd site build"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}

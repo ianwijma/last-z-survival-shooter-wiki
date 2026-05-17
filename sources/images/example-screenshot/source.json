@@ -1,0 +1,25 @@
+{
+  "id": "images/f1e2d3c4b5a6",
+  "type": "images",
+  "url": "file://inbox/m4a1-loadout-screen.png",
+  "title": "M4A1 Loadout Screen — Fast Mag II Configuration",
+  "author": null,
+  "publishedAt": null,
+  "fetchedAt": "2026-04-29T14:30:00Z",
+  "contentHash": "sha256:d4e5f67890123456",
+  "rawPath": null,
+  "rawBytes": 245678,
+  "extraction": {
+    "path": "extraction.md",
+    "model": "google/gemini-2.5-pro",
+    "extractorVersion": "v1",
+    "extractedAt": "2026-04-29T14:31:22Z",
+    "inputContentHash": "sha256:d4e5f67890123456",
+    "status": "ok"
+  },
+  "ingesterVersion": "v1",
+  "assetPath": "site/public/media/screenshots/m4a1-fastmag-loadout.png",
+  "originalFilename": "m4a1-loadout-screen.png",
+  "addedAt": "2026-04-29T14:30:00Z",
+  "notes": "Captured from game client version 1.4.1"
+}

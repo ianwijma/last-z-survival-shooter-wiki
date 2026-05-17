@@ -1,0 +1,22 @@
+{
+  "id": "youtube/example123vid",
+  "type": "youtube",
+  "url": "https://www.youtube.com/watch?v=example123vid",
+  "title": "Best M4A1 Loadout for Season 3 — Complete Guide",
+  "author": "SurvivorGaming",
+  "publishedAt": "2026-04-15T00:00:00Z",
+  "fetchedAt": "2026-04-29T10:22:04Z",
+  "contentHash": "sha256:a1b2c3d4e5f67890",
+  "rawPath": "raw.txt",
+  "rawBytes": 12456,
+  "extraction": {
+    "path": "extraction.md",
+    "model": "anthropic/claude-sonnet-4",
+    "extractorVersion": "v1",
+    "extractedAt": "2026-04-29T10:23:11Z",
+    "inputContentHash": "sha256:a1b2c3d4e5f67890",
+    "status": "ok"
+  },
+  "ingesterVersion": "v1",
+  "notes": ""
+}
