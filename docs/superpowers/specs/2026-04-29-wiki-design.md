@@ -68,7 +68,7 @@ The wiki is built from three explicit, independently-auditable layers. Each laye
 │     - extraction.md   (structured, topic-tagged claims)     │
 │                                                             │
 │   Extractions are the source-of-truth for facts.            │
-│   Run by EXPENSIVE model. Cached by contentHash.            │
+│   Run by EXPENSIVE model. Cached by content and prompt.     │
 └─────────────────────────┬───────────────────────────────────┘
                           │
 ┌─────────────────────────┴───────────────────────────────────┐
@@ -101,7 +101,7 @@ external source (YouTube, wiki, Reddit, image, note)
         ▼
 sources/<type>/<id>/source.json + raw.<ext>
         │
-        │  Extractor (EXPENSIVE LLM; once per unique contentHash)
+        │  Extractor (EXPENSIVE LLM; cached per content/version)
         │    - input: raw.* + extraction prompt
         │    - output: structured extraction.md
         │    - tagged with topic paths matching templates/
@@ -119,6 +119,10 @@ indexes/coverage.md (optional, from curator)
         │    - output: MDX page content
         ▼
 site/content/<path>.mdx
+        │
+        │  Indexer runs again to read actual page citations
+        ▼
+indexes/pages-to-sources.jsonl + indexes/sources-to-pages.jsonl
         │
         │  Next.js + Nextra build (deterministic)
         ▼
@@ -143,9 +147,10 @@ last-z-survival-shooter-wiki/
 │
 ├── .github/
 │   └── workflows/
-│       └── build-and-deploy.yml   # Next.js static export → Cloudflare Pages (only CI in MVP)
+│       └── build-and-deploy.yml   # audit + static export + Pages deployment
 │
 ├── docs/                          # project documentation (not wiki content)
+│   ├── fixtures/                 # example extractions, excluded from live corpus
 │   └── superpowers/
 │       ├── specs/                 # design specs like this one
 │       └── plans/                 # implementation plans (writing-plans output)
@@ -201,20 +206,24 @@ last-z-survival-shooter-wiki/
 │   └── images/
 │       └── <imageHash>/
 │           ├── source.json        # originalFilename, assetPath, addedAt, contentHash
-│           ├── raw.png            # (or a reference to site/public/media/...)
+│           ├── raw.ref.json       # points to committed original in site/public/media/
 │           └── extraction.md      # vision LLM: description, OCR, inferred claims
 │
 ├── indexes/                       # COMMITTED — auto-derived from templates + sources
 │   ├── sources-to-pages.jsonl     # {sourceId, pages: [pagePath, ...]}
 │   ├── pages-to-sources.jsonl     # {pagePath, sources: [sourceId, ...]}
 │   ├── templates-to-sources.jsonl # {templatePath, sources: [sourceId, ...]}
+│   ├── drafting-notes/           # missing-evidence notes, keyed by page path
 │   └── coverage.md                # curator output (gap report)
 │
 ├── site/                          # LAYER 3: Next.js + Nextra v4 app
 │   ├── package.json               # workspace member
 │   ├── next.config.mjs            # output: 'export' → static HTML
-│   ├── theme.config.tsx           # Nextra docs theme config
+│   ├── mdx-components.tsx         # MDX component registry and page wrapper
 │   ├── tsconfig.json
+│   ├── app/
+│   │   ├── layout.tsx             # Nextra docs Layout, Navbar, Footer, page map
+│   │   └── [[...mdxPath]]/page.tsx # content route and static parameters
 │   ├── content/                   # Nextra content root (GENERATED, committed)
 │   │   ├── _meta.js               # auto-generated from templates
 │   │   ├── index.mdx
@@ -222,7 +231,6 @@ last-z-survival-shooter-wiki/
 │   │   │   ├── _meta.js
 │   │   │   ├── index.mdx
 │   │   │   ├── m4a1.mdx
-│   │   │   └── _drafting-notes.md # gap notes for the writer (committed; see §13)
 │   │   └── ...
 │   ├── components/                # React components used in MDX
 │   │   ├── Aggregation.tsx        # build-time query over page graph
@@ -292,7 +300,7 @@ last-z-survival-shooter-wiki/
 |---|---|---|---|---|
 | `templates/` | Intent | Yes | Human (with AI assist) | Writer, Curator |
 | `sources/` | Facts | Yes | Ingester + Extractor | Writer, Curator, humans |
-| `indexes/` | Derived | Yes | `pipeline index` | Curator, Writer, humans |
+| `indexes/` | Derived | Yes | `pipeline index`, Writer, Curator | Curator, Writer, humans |
 | `site/content/` | Output | Yes | Writer | Next.js build, readers |
 | `site/components/` | Output infra | Yes | Human | Next.js build |
 | `site/public/media/` | Output assets | Yes | Human (via inbox flow) | Next.js build |
@@ -304,7 +312,7 @@ last-z-survival-shooter-wiki/
 **Rationale notes:**
 
 - **`site/content/` is committed** even though it's generated, because it makes PR reviews concrete (reviewers see the actual page diff, not just "the writer produced something"). It also means the site can be built and served without running the pipeline at all.
-- **`indexes/` is committed** for the same reason: reviewers can inspect the provenance graph directly in the PR instead of running a script.
+- **`indexes/` is committed** for the same reason: reviewers can inspect the provenance graph and drafting notes directly in the PR instead of running a script.
 - **`sources/<type>/<id>/raw.*` is committed** to make extractions auditable: an LLM reviewer can compare `raw.txt` against `extraction.md` and flag distortions. Text transcripts are small; repo growth is acceptable. Binary images live under `site/public/media/` (not duplicated in `sources/images/`).
 - **`inbox/` is committed** — notes/screenshots you drop in are part of the knowledge base and should be versioned. Once processed, the pipeline leaves them there (they become the `raw.*` artifact for their source entry).
 - **`.cache/` is gitignored** and should contain only transient fetch artifacts that would be wasteful to commit (e.g., yt-dlp download buffers, pre-Readability HTML dumps). Anything the pipeline needs long-term lives under `sources/`.
@@ -358,6 +366,8 @@ aggregations: []
 
 # OPTIONAL metadata
 seasonAdded: 1               # when this entity was introduced; used by season pages
+seasonModifiedIn: [3]         # seasons in which this entity changed
+tags: [assault-rifle]         # optional aggregation filters
 addedToWiki: 2026-04-29
 ---
 
@@ -404,6 +414,8 @@ patch version and citation.
 | `topicTags` | string[] | no | Additional topic paths (beyond slug) whose facts feed this page |
 | `aggregations` | Aggregation[] | no | See §10 |
 | `seasonAdded` | number | no | Season when entity was introduced; used by season aggregations |
+| `seasonModifiedIn` | number[] | no | Seasons when the entity changed; aggregation uses array membership |
+| `tags` | string[] | no | Stable labels used by aggregation filters |
 | `addedToWiki` | ISO date | no | Informational; auto-filled by `template new` |
 
 ### 4.3 Category defaults
@@ -458,7 +470,7 @@ All three produce the same artifact type; scaffolders just reduce typing.
 The extraction layer turns raw, messy, time-variant source material into structured, topic-tagged, auditable knowledge. Every ingested source produces exactly three committed files in `sources/<type>/<id>/`:
 
 1. **`source.json`** — metadata and provenance (what, when, how, hash).
-2. **`raw.<ext>`** — cleaned raw content (transcript, readable HTML-to-markdown, JSON dump, image bytes).
+2. **`raw.<ext>`** — cleaned raw content (transcript, readable HTML-to-markdown, JSON dump). For images, `raw.ref.json` points to the committed original under `site/public/media/` so the binary is stored once.
 3. **`extraction.md`** — the structured LLM output. This is the source-of-truth for facts.
 
 ### 5.1 `source.json` schema
@@ -479,6 +491,7 @@ The extraction layer turns raw, messy, time-variant source material into structu
     "path": "extraction.md",
     "model": "anthropic/claude-sonnet-4",
     "extractorVersion": "v1",
+    "taxonomyHash": "sha256:82d...",
     "extractedAt": "2026-04-29T10:23:11Z",
     "inputContentHash": "sha256:0a3b1c...",
     "status": "ok"
@@ -495,10 +508,12 @@ The extraction layer turns raw, messy, time-variant source material into structu
 | `id` | `<type>/<stableId>` — matches the folder name. Stable across re-fetches. |
 | `type` | One of `youtube`, `wikis`, `reddit`, `steam`, `official`, `inbox`, `images`. |
 | `url` | Canonical source URL. For `inbox`/`images`, a local reference. |
-| `contentHash` | `sha256` over the normalized `raw.*` content. Used for caching. |
+| `contentHash` | `sha256` over normalized `raw.*` content; for images, over the referenced original image bytes. Used for caching. |
+| `rawBytes` | Size of raw text/JSON bytes; for images, size of referenced original bytes. |
 | `extraction.inputContentHash` | The `contentHash` that was input to the extractor. If this differs from `contentHash` on re-ingest, the extractor must re-run. |
 | `extraction.status` | `ok` / `failed` / `stale`. `stale` = source has been re-ingested but extractor hasn't re-run. |
 | `extractorVersion` | Bumped when the extraction prompt changes materially. Enables forced re-extraction. |
+| `extraction.taxonomyHash` | Hash of sorted template topic paths given to the extractor. Drift is reported; reclassification is an explicit operation. |
 | `ingesterVersion` | Bumped when the ingester's normalization logic changes. |
 
 ### 5.2 `extraction.md` schema (text sources)
@@ -514,6 +529,7 @@ sourceDate: 2026-04-15
 extractedAt: 2026-04-29T10:23:11Z
 extractedWith: anthropic/claude-sonnet-4
 extractorVersion: v1
+taxonomyHash: sha256:82d...
 inputContentHash: sha256:0a3b1c...
 topics:
   - weapons/m4a1
@@ -522,6 +538,7 @@ topics:
 proposedNewTopics:
   - path: mechanics/heat-system
     justification: "Author describes a new 'overheat' mechanic not in any existing topic."
+    claimIds: [c8]
 confidence: high
 patchContext: "1.4.1"
 ---
@@ -534,17 +551,17 @@ extractor. Max ~120 words.
 # Claims by topic
 
 ## weapons/m4a1
-- Base reload time: 3.1s [at 1:22]
-- With Fast Mag I: 2.7s [at 2:15]
-- With Fast Mag II: 2.3s [at 2:34]
-- Magazine size: 30 [at 0:45]
-- Base damage per shot: 28 [at 5:10] (author uncertain — says "I think")
+- [c1] Base reload time: 3.1s [at 1:22]
+- [c2] With Fast Mag I: 2.7s [at 2:15]
+- [c3] With Fast Mag II: 2.3s [at 2:34]
+- [c4] Magazine size: 30 [at 0:45]
+- [c5] Base damage per shot: 28 [at 5:10] (author uncertain — says "I think")
 
 ## mechanics/reload-speed
-- Fast Mag stacks additively with reload perks [at 4:10]
+- [c6] Fast Mag stacks additively with reload perks [at 4:10]
 
 ## seasons/season-3
-- Season 3 introduces a new overheat mechanic affecting sustained fire [at 6:03]
+- [c7] Season 3 introduces a new overheat mechanic affecting sustained fire [at 6:03]
 
 # Key quotes
 
@@ -554,6 +571,11 @@ extractor. Max ~120 words.
 # Unverified / low-confidence claims
 
 - "5% damage buff in hotfix 1.4.2" — author mentions, does not cite source [6:45]
+
+# Proposed claims by topic
+
+## mechanics/heat-system
+- [c8] Sustained fire can trigger an overheat state [at 6:03].
 
 # Contradictions with existing knowledge
 
@@ -574,10 +596,11 @@ extractor. Max ~120 words.
 | `# Claims by topic` | yes | List at least the topics in frontmatter, each with "No claims." if source had none |
 | `# Key quotes` | yes | "No notable quotes." |
 | `# Unverified / low-confidence claims` | yes | "None." |
+| `# Proposed claims by topic` | yes | "None."; claims here do not feed published pages until promotion |
 | `# Contradictions with existing knowledge` | yes | "None detected at extraction time." |
 | `# Extractor notes` | yes | "None." |
 
-The strict structure makes extractions parseable by the writer without further LLM calls (it can grep by `## <topic>` to find relevant claims).
+Every distinct claim in `# Claims by topic` or `# Proposed claims by topic` has a stable ID within its source, such as `[c3]`. The same claim duplicated under another topic keeps the same ID and identical text and locator. A reference marker points into the committed raw artifact: a timestamp for video, comment ID for Reddit, or image region for a screenshot. On re-extraction, the pipeline reuses an existing ID only when normalized claim text and locator both match exactly; changed claims receive new IDs, retired IDs are never reused, and ambiguous matches are flagged for review. This structure lets the writer find claims by heading and lets `pipeline audit` resolve citations mechanically.
 
 ### 5.3 `extraction.md` schema (images)
 
@@ -593,6 +616,7 @@ sourceDate: 2026-04-29
 extractedAt: 2026-04-29T10:45:02Z
 extractedWith: google/gemini-2.5-pro
 extractorVersion: v1
+taxonomyHash: sha256:82d...
 inputContentHash: sha256:...
 topics:
   - weapons/m4a1
@@ -620,11 +644,11 @@ attachment slots. Background: in-menu dark gradient.
 # Claims by topic
 
 ## weapons/m4a1
-- Reload time with Fast Mag II displayed as 2.3s (confirms youtube/abc123xyz claim)
-- Damage value displayed as 28
+- [c1] Reload time with Fast Mag II displayed as 2.3s [image region: stats panel, reload row] (confirms youtube/abc123xyz claim)
+- [c2] Damage value displayed as 28 [image region: stats panel, damage row]
 
 ## ui/loadout-screen
-- Loadout screen shows weapon model, stats panel, and attachment grid.
+- [c3] Loadout screen shows weapon model, stats panel, and attachment grid [image region: full screen].
 
 # Inferred UI state
 - Character level 12.
@@ -645,6 +669,7 @@ The caching policy is content-addressed:
 if exists(sources/<id>/extraction.md)
    AND source.json.extraction.inputContentHash == source.json.contentHash
    AND source.json.extraction.extractorVersion == current extractor version
+   AND extraction.md frontmatter agrees with source.json.extraction
 then
    skip extraction (use cached)
 else
@@ -654,19 +679,22 @@ else
 **Re-extraction triggers:**
 
 1. **Source content changed** (`pipeline ingest` re-fetched and `contentHash` differs). Automatic.
-2. **Extractor prompt updated** (`extractorVersion` bumped in `pipeline/src/extract/source-extractor.ts`). Triggered by `bun pipeline reextract --all` or incrementally.
-3. **Manual force** (`bun pipeline reextract <sourceId>`). For debugging or single-source re-runs.
+2. **Extractor prompt updated** (`extractorVersion` bumped in `pipeline/src/extract/source-extractor.ts`). Picked up by `extract --stale` or a forced re-extraction.
+3. **Taxonomy changed** (the sorted template topic paths changed). `template check` reports older `taxonomyHash` values. Use claim promotion (§5.5) for accepted proposals, or explicitly run `extract --taxonomy-stale` to reclassify older sources when needed. `refresh` does not automatically incur this corpus-wide cost.
+4. **Manual force** (`bun pipeline reextract <sourceId>`). For debugging or single-source re-runs.
 
 ### 5.5 Topic tagging rules
 
 The extractor is prompted with the current taxonomy (derived from scanning `templates/**/*.md` paths) and instructed:
 
 1. Use existing topic paths **exactly** when applicable. Example: if `templates/weapons/m4a1.md` exists, use `weapons/m4a1`, not `weapons/m4` or `m4a1`.
-2. If content doesn't fit any existing template path, emit it under `proposedNewTopics` in frontmatter with a 1-sentence `justification`. Never invent topics silently.
+2. If content doesn't fit any existing template path, emit a `proposedNewTopics` entry with a path, justification, and claim IDs. Keep the corresponding claims under `# Proposed claims by topic` using the proposed path as a `##` heading. Never invent a published topic silently.
 3. A claim can be listed under multiple topics — duplicate it verbatim in each relevant `## <topic>` section rather than cross-referencing.
 4. Timestamps (YouTube) or reference markers (Reddit comment IDs, image coordinates) MUST be preserved inline with claims whenever the raw content supplies them.
 
 Curator (§9) aggregates `proposedNewTopics` across all extractions and surfaces them in `indexes/coverage.md` for human approval.
+
+When a human accepts a proposed topic, either `template new <path>` form creates its template and promotes matching proposed claim sections into `# Claims by topic`, updating `topics` and removing that proposal. It does this without an LLM call; `--from-extractions` additionally uses the cheap model to draft the template brief. For a hand-authored template, run `template promote <path>` to perform the same promotion. These commands record changed extractions so `write --all-stale` detects affected pages. `template check` and `audit` reject a published topic whose claim heading and `topics` entry disagree, and warn when an existing template path still has unpromoted proposals.
 
 ### 5.6 Per-source-type normalization
 
@@ -680,9 +708,9 @@ Each ingester produces a canonical `raw.<ext>` shape suitable for its type:
 | `steam` | `raw.md` | Steam Community/News API JSON → rendered markdown |
 | `official` | `raw.md` | RSS item or scraped HTML → Readability → markdown |
 | `inbox` | `raw.md` or `raw.txt` | Copied verbatim from the `inbox/` file; light frontmatter stripped |
-| `images` | `raw.png` | Image bytes (original or re-encoded PNG/JPEG/WebP) |
+| `images` | `raw.ref.json` | Repository-relative path to original image bytes under `site/public/media/<hash>/`; ingest rejects paths outside that directory |
 
-The extractor always reads `raw.*` — never the original URL. This guarantees that re-running extraction is deterministic against a committed input.
+The extractor always reads committed raw content — for images, it follows the validated `raw.ref.json` path to the committed original image — never the original URL. This guarantees that re-running extraction uses a committed input.
 
 ---
 
@@ -720,10 +748,16 @@ bun pipeline template check
   Outputs:  stdout report; non-zero exit if any errors (not warnings).
 
 bun pipeline template rename <old-path> <new-path>
-  Deterministic rename. Moves templates/<old>.md → templates/<new>.md,
-  rewrites references in extraction.md frontmatter (topics, proposedNewTopics),
-  rewrites generated pages' frontmatter slug, rewrites indexes/.
+  Deterministic rename. Moves templates/<old>.md → templates/<new>.md and
+  site/content/<old>.mdx → site/content/<new>.mdx; rewrites template topicTags,
+  extraction frontmatter and claim-section headings, generated page slug,
+  internal links, aggregation references, and indexes. Aborts if the new
+  path exists or any reference cannot be rewritten unambiguously.
   Outputs:  one-line summary of files touched.
+
+bun pipeline template promote <path>
+  Promote proposed claims for an already hand-authored template. Updates each
+  matching extraction's topics, claims, and proposedNewTopics deterministically.
 ```
 
 ### 6.2 Ingest commands (Layer 2, fetch step)
@@ -731,8 +765,9 @@ bun pipeline template rename <old-path> <new-path>
 ```
 bun pipeline ingest youtube <url>
   Fetch transcript + metadata, compute contentHash, write sources/youtube/<id>/
-  source.json + raw.txt. Does NOT run extraction (see §6.3).
-  Skips if sources/youtube/<id>/source.json exists with same contentHash.
+  source.json + raw.txt, then runs extraction by default (see §6.3).
+  Reuses the existing extraction when raw content, extractor version, and
+  taxonomy hash are unchanged. --no-extract skips the extraction step.
 
 bun pipeline ingest wiki <url>
   Fetch + Readability clean + Turndown. Write sources/wikis/<urlHash>/.
@@ -773,6 +808,11 @@ bun pipeline extract --stale
   Run extraction on every source where extraction is missing or stale
   (inputContentHash differs, or extractorVersion differs).
 
+bun pipeline extract --taxonomy-stale
+  Explicitly reclassify sources whose saved taxonomyHash differs from the
+  current template taxonomy. Prints the count and estimated LLM cost before
+  running; requires user approval when driven by an agent.
+
 bun pipeline extract --all
   Force re-extract every source regardless of cache state.
 
@@ -787,7 +827,7 @@ bun pipeline index
   Rebuild indexes/ from scratch by scanning:
     - templates/**/*.md frontmatter
     - sources/**/extraction.md frontmatter
-    - site/content/**/*.mdx frontmatter
+    - site/content/**/*.mdx frontmatter and actual <SourceCite> references
   Outputs:
     indexes/sources-to-pages.jsonl
     indexes/pages-to-sources.jsonl
@@ -796,12 +836,23 @@ bun pipeline index
 
 bun pipeline audit
   Verify integrity:
-    - Every page's frontmatter.sources[] resolves to existing sources/<id>/.
+    - Every page's frontmatter.sources[] equals its actual <SourceCite> source set.
+    - Every <SourceCite id="..." claim="..." /> resolves to a claim ID in the
+      matching extraction with a locator into committed raw content.
+    - Extraction topics and proposed claim headings match frontmatter.
+    - Every page's stored input fingerprint matches current selected inputs.
+    - Every extraction's inputContentHash, extractorVersion, and taxonomyHash
+      match its source metadata; the first two match current source/pipeline
+      state. Older taxonomy hashes are warnings, not integrity errors.
     - Every template's topic has ≥1 matching extraction (warn if missing).
     - No orphan extractions (extraction whose topic has no template — warn).
     - No duplicate source URLs under different sourceIds.
-    - raw.* file size matches source.json.rawBytes.
+    - raw.* file size and hash match source.json.rawBytes/contentHash;
+      image references resolve inside site/public/media/ and their referenced
+      binary size and hash match source.json.
   Non-zero exit on integrity errors; zero on warnings only.
+  This verifies structural links; human review still judges whether the raw
+  evidence supports the claim's meaning. The separate site build compiles MDX.
 ```
 
 ### 6.5 Plan command (Layer 2 → Layer 1 feedback loop)
@@ -831,8 +882,8 @@ bun pipeline write --all
   Regenerate every page that has a template.
 
 bun pipeline write --all-stale
-  Regenerate only pages where any input (template, extraction, AGENTS.md)
-  is newer than the output page's lastGeneratedAt frontmatter.
+  Regenerate missing pages and pages whose complete input fingerprint differs
+  from the saved fingerprint (see §8.2). File mtimes are not used.
 
 bun pipeline rewrite --all
   Force regenerate every page regardless of staleness.
@@ -853,6 +904,8 @@ bun pipeline refresh
     2. pipeline extract --stale
     3. pipeline index
     4. pipeline write --all-stale
+    5. pipeline index (rebuild citation joins from the written pages)
+    6. pipeline audit (abort before commit/deploy on integrity errors)
   Intended for "catch up on everything that might have changed."
 
 bun pipeline affected <sourceId>
@@ -938,13 +991,13 @@ Per-source costs (order of magnitude):
 
 ### 7.4 Structured output strategy
 
-The `EXTRACT` tier uses Vercel AI SDK's `generateObject` with a Zod schema **only for the frontmatter portion** of `extraction.md`. The body (Summary, Claims by topic, etc.) is generated as markdown via `generateText` in the same call, constrained by a strict prompt that references the required section headings.
+The `EXTRACT` tier makes one structured-output call with a Zod schema for the complete extraction: metadata, topic paths, claim IDs, claim text, evidence locators, proposed claims, and notes. Deterministic code renders the validated object as `extraction.md` frontmatter and markdown sections. Source-derived metadata (`sourceId`, URL, hashes, model ID, version, taxonomy hash, and timestamps) is set by the pipeline rather than supplied by the model.
 
 Why this split:
-- Frontmatter needs strict typing (topic paths, model IDs, hashes) — `generateObject` + Zod catches malformed output before it hits disk.
-- Body is free-form prose and would be painful to schematize. Prompt-level constraints plus a post-processing validator (checks for required `## Section` headings) are sufficient.
+- Typed claims and locators let the pipeline reject duplicate IDs, missing evidence markers, and claims assigned to absent topic headings before writing files.
+- Markdown is a presentation format; rendering it from validated data avoids trying to combine two SDK generation APIs in one call.
 
-The `FORMAT` tier uses `generateText` end-to-end (no `generateObject`) — writing MDX is a text-completion task, and Zod-validating generated MDX has no benefit.
+The `FORMAT` tier uses `generateText` for page prose. The pipeline then parses and validates generated MDX, its citations, and required sections before replacing a page. Any validation failure aborts the write.
 
 ### 7.5 Retry and fallback behavior
 
@@ -982,7 +1035,7 @@ A page exists in one of five states at any time:
   ┌──────────────┐
   │   WRITTEN    │  Page exists and is up-to-date.
   └──────┬───────┘
-         │ template, source, or AGENTS.md updated after lastGeneratedAt
+         │ complete input fingerprint changes
          ▼
   ┌──────────────┐
   │    STALE     │  Page exists but inputs are newer.
@@ -1012,22 +1065,21 @@ sources:
   - images/a9c2b1d4
 lastGeneratedAt: 2026-04-29T10:52:17Z
 generatorVersion: v1
+generatorWriter: sdk
 generatorModel: google/gemini-2.5-flash
-templateHash: sha256:ab7c...
-agentsHash: sha256:91de...
-sourceHashes:
-  youtube/abc123xyz: sha256:0a3b1c...
-  wikis/def456: sha256:2f8e4a...
-  images/a9c2b1d4: sha256:7c1b9d...
+inputFingerprint: sha256:ab7c...
+seasonAdded: 1
 ---
 ```
 
 **Why these fields:**
 
-- `sources` — the cited source IDs, used by `indexes/pages-to-sources.jsonl` and by `SourceCite` component at render time.
-- `lastGeneratedAt` — compared against source / template / AGENTS.md mtimes for staleness detection.
-- `templateHash`, `agentsHash`, `sourceHashes` — content hashes of all inputs at generation time. Enables precise staleness check: a page is stale if any hash differs from current. More reliable than mtime (survives `git clone`).
-- `generatorVersion` — bump when the writer's prompt or logic changes materially; forces regen.
+- `sources` — exact set of source IDs referenced by `<SourceCite>`, derived after MDX validation; used for citation indexes.
+- `lastGeneratedAt` — audit information only; never used for staleness detection.
+- `inputFingerprint` — SHA-256 of a canonical JSON object containing the merged page and category templates (including query metadata), `AGENTS.md`, writer prompt and version, selected writer and model IDs, and the **complete sorted list** of selected source IDs and each selected `extraction.md` content hash. A new source, removed source, edited claim, or category change alters the fingerprint even when raw source hashes do not change. Compute this before deciding whether a page is stale; missing pages are always stale. Recompute after a write and save the value with the page.
+- `generatorWriter` and `generatorModel` — identify the engine used for that page. `audit` recomputes its fingerprint with these saved choices; a `write` command computes it with the writer and model selected for that run, so an intentional engine change regenerates the page.
+- `generatorVersion` — bump when writer code changes materially; included in the fingerprint.
+- `seasonAdded` and other query fields — copied from validated template frontmatter so build-time aggregations can filter pages. `template check` rejects unsupported or conflicting query field types.
 
 Frontmatter is **authoritative and machine-managed**. Hand-edits to generated page frontmatter will be overwritten on next `write`. (Prose body edits are *also* overwritten — see §8.5 for the override pattern.)
 
@@ -1047,13 +1099,15 @@ For a given `<topicPath>`, the writer assembles its prompt context in this order
          only extractions in template.sources.include[]
      - template.sources.mode == "exclude":
          same as "auto", then subtract extractions in template.sources.exclude[]
-5. For context: existing site/content/<topicPath>.mdx, if any (enables writer
-   to preserve human-ratified sections — see §8.5).
+     - in every mode, include only claims under the page path or its topicTags;
+       other claim sections in a selected source are context, not page evidence
+5. pipeline/prompts/write-page.md + generator version
+6. For context: existing site/content/<topicPath>.mdx, if any (see §8.5).
 ```
 
 The writer prompt (stored in `pipeline/prompts/write-page.md`) instructs the model to:
 - Emit each section named in `template.sections[]` in order.
-- Cite sources inline using the `<SourceCite id="<sourceId>" />` component (rendered by Nextra at build).
+- Cite individual claims inline using `<SourceCite id="youtube/abc123xyz" claim="c3" />`. The component resolves the source, claim, and evidence locator at build time. The pipeline validates every citation and rejects bare source citations; human review checks that all factual prose has appropriate citations.
 - Never introduce claims unsupported by the cited extractions.
 - When a section has no supporting claims, emit the placeholder block (§8.4).
 - Write the final `## Sources` section as a formatted list of all cited sources.
@@ -1072,7 +1126,7 @@ When the writer encounters a section in `template.sections[]` that has no suppor
 > run `bun pipeline write weapons/m4a1`.*
 ```
 
-Additionally, the writer appends a line to `site/content/<parentDir>/_drafting-notes.md` (created if missing):
+Additionally, the writer updates `indexes/drafting-notes/<topicPath>.md` (created if missing):
 
 ```markdown
 ## 2026-04-29 — weapons/m4a1
@@ -1080,21 +1134,21 @@ Additionally, the writer appends a line to `site/content/<parentDir>/_drafting-n
 - Section `notable-patches` has only 1 supporting claim; thin coverage.
 ```
 
-`_drafting-notes.md` files are **committed** alongside pages — they're part of the audit trail and surface gaps to human reviewers during PR review. They are excluded from the Nextra content collection so they don't render as pages (see §11.2).
+Drafting notes are **committed** under `indexes/` for PR review. Their location keeps them out of the Nextra content tree and search index.
 
 ### 8.5 Preserving human edits to generated pages
 
 Generated prose is overwritten on every `write` by default. To preserve human-authored content through regeneration, the writer respects **protected blocks**:
 
 ```mdx
-<!-- :protected:start editorial-note -->
+{/* :protected:start editorial-note */}
 
 This section was written by hand after community feedback; do not regenerate.
 
-<!-- :protected:end editorial-note -->
+{/* :protected:end editorial-note */}
 ```
 
-The writer, when reading an existing page as context (step 5 of §8.3), extracts protected blocks and re-emits them **verbatim in place** after regenerating the surrounding prose. The block's `name` (e.g. `editorial-note`) must be unique within a page; the writer logs a warning if it cannot locate the same-named block in its output.
+Before calling a model, the pipeline parses the existing MDX and extracts protected blocks. Each name must be unique and each start/end marker must pair. The writer prompt may contain placeholders, but the pipeline restores the original block text byte-for-byte after generation. If any block cannot be placed exactly once, if a name is duplicated, or if the final MDX fails validation, the command fails and leaves the existing page untouched. The pipeline writes a validated candidate to a temporary file and atomically replaces the page only after all checks pass.
 
 This is intentionally minimal:
 - No merge algorithm, no heuristic "is this paragraph still valid."
@@ -1128,14 +1182,14 @@ interface Writer {
     mdx: string;                 // the complete page body (frontmatter auto-added)
     citedSourceIds: string[];    // for frontmatter + indexes
     missingSections: string[];   // sections that triggered the placeholder block
-    warnings: string[];          // protected block mismatches, etc.
+    warnings: string[];          // non-fatal prose suggestions only
   }>;
 }
 ```
 
 **`SdkWriter`** — `generateText` via OpenRouter + a small local tool set (read adjacent pages, list available components). One-shot per page. Default.
 
-**`OpenCodeWriter`** — shells out to `opencode run --prompt-file ...` with a prompt referencing `AGENTS.md` and the assembled context. Uses OpenCode's agent loop. Slower, potentially higher quality on complex pages.
+**`OpenCodeWriter`** — assembles a prompt file, invokes a pinned OpenCode CLI version with supported `run` and `--file` arguments, captures stdout as the candidate MDX, and passes it through the same validation and atomic write path as `SdkWriter`. It runs in an isolated temporary directory containing only the assembled inputs. See §12.6.
 
 Selection: `bun pipeline write <path> --writer sdk|opencode`. Default `sdk`.
 
@@ -1167,7 +1221,7 @@ bun pipeline plan
 
 - Always safe: read-only apart from writing `indexes/coverage.md`.
 - Cheap: one `FORMAT` model call per "topic cluster" the curator identifies, plus deterministic scans. Typical total cost: <$0.10 per run for a wiki with ~50 sources.
-- Idempotent: running twice in a row with no intervening changes produces the same output.
+- Stable findings: running twice with no intervening changes yields the same recommendations; `generatedAt` may differ.
 
 ### 9.3 `coverage.md` format
 
@@ -1234,7 +1288,7 @@ Page can be written but will be single-sourced. Consider finding corroboration.
 
 ## Stale pages
 
-Page's inputs have changed since `lastGeneratedAt`.
+Page's current input fingerprint differs from its saved fingerprint.
 
 - `weapons/m4a1` — source `youtube/abc123` re-extracted 2026-04-26, page last
   generated 2026-04-22.
@@ -1282,9 +1336,9 @@ The curator reads (no LLM calls for this step):
 ```
 templates/**/*.md                     → set of valid template paths and categories
 sources/**/extraction.md frontmatter  → set of (sourceId, topics[], proposedNewTopics[])
-site/content/**/*.mdx frontmatter     → set of (pagePath, lastGeneratedAt, sourceHashes)
+site/content/**/*.mdx frontmatter     → set of (pagePath, inputFingerprint, sources)
 indexes/*.jsonl                       → precomputed joins (refreshed by `pipeline index`)
-AGENTS.md mtime + hash                → input for staleness detection
+AGENTS.md content hash                 → input for staleness detection
 ```
 
 These are aggregated into a compact "state summary" JSON structure (typically under 20KB) and passed to the curator LLM along with the curator prompt (`pipeline/prompts/curator.md`). The LLM's job is narrow: cluster proposed new topics, suggest outlines, and generate the fuzzy-match similarity flags and prose narrative.
@@ -1311,7 +1365,7 @@ git add -A && git commit -m "Add Season 3 coverage"
 
 ## 10. Aggregations
 
-Aggregations solve the "season/patch/event page" problem: how do pages that summarize other pages stay current without being regenerated every time something they reference changes? The answer is **build-time queries** over the Nextra page graph, rendered by a custom `<Aggregation>` React component.
+Aggregations solve the "season/patch/event page" problem: how do pages that summarize other pages stay current without being regenerated every time something they reference changes? The answer is **build-time queries** over validated generated page metadata, rendered by a custom `<Aggregation>` React component.
 
 ### 10.1 The core tension
 
@@ -1358,7 +1412,7 @@ aggregations:
     title: "Map Changes"
     query:
       category: maps
-      seasonModifiedIn: 3
+  seasonModifiedIn: 3
     render: list
     empty: "No map changes recorded for Season 3."
 ---
@@ -1377,7 +1431,7 @@ aggregations:
 | `limit` | number | no | Truncate to N; default unlimited |
 | `empty` | string | no | Message shown when query returns zero results; default "No matching pages." |
 
-The `query` object is an **equality map** over frontmatter fields. Multi-value matching is handled like this:
+The `query` object is an equality map over frontmatter fields. A scalar query matches the same scalar page field, or membership in an array page field (`seasonModifiedIn: 3` matches `[2, 3]`). An array query requires the page array to contain every listed value:
 
 ```yaml
 query:
@@ -1387,6 +1441,8 @@ query:
 ```
 
 This keeps the query surface small and debuggable. Complex filtering is out of MVP scope.
+
+The writer copies validated query fields from each merged template into generated page frontmatter. The supported MVP fields are `category`, `seasonAdded`, `seasonModifiedIn`, and `tags`; the latter two must also be declared in the template schema (§4.2). `template check` rejects queries against unavailable fields, and `audit` checks that generated frontmatter matches its template. The build-time page index reads these validated fields from every generated MDX file, so query results change when a page is added or updated even if the season page is not rewritten.
 
 ### 10.3 Writer behavior for aggregations
 
@@ -1430,7 +1486,7 @@ The component lives at `site/components/Aggregation.tsx`. Implementation sketch:
 
 ```tsx
 // Resolves at Next.js build time — no client-side runtime query.
-import { allPages } from "@/lib/content";   // typed page index, built from Nextra content
+import { allPages } from "@/lib/content";   // typed index of generated MDX metadata
 import Link from "next/link";
 
 interface AggregationProps {
@@ -1457,7 +1513,7 @@ export function Aggregation({ id, query, render = "list", sort = "title", limit,
 }
 ```
 
-`allPages` is a build-time-computed array of `{ slug, frontmatter }` for every MDX file under `site/content/`. It is produced by a small helper in `site/lib/content.ts` that scans the content directory at build time using Nextra's page tree API.
+`allPages` is a build-time-computed array of `{ slug, frontmatter }` for every MDX file under `site/content/`. `site/lib/content.ts` scans generated MDX frontmatter with the same schema used by the pipeline; it does not rely on navigation metadata, which need not expose every query field. Invalid frontmatter fails the build.
 
 ### 10.5 Consequences of this design
 
@@ -1480,10 +1536,7 @@ The site layer is a Next.js 15 + Nextra v4 application configured for **static e
 import nextra from "nextra";
 
 const withNextra = nextra({
-  theme: "nextra-theme-docs",
-  themeConfig: "./theme.config.tsx",
-  defaultShowCopyCode: true,
-  search: { codeblocks: false }   // FlexSearch over prose only
+  // The docs theme is configured in app/layout.tsx, not here.
 });
 
 export default withNextra({
@@ -1502,6 +1555,27 @@ Key choices:
 - **`basePath`** — configurable via env var. Empty string for Cloudflare Pages root domain; can be `/last-z-wiki` if deployed to a GitHub Pages project path.
 - **`trailingSlash: true`** — Cloudflare Pages handles directory-style URLs cleanly; avoids 307 redirect loops seen under some Pages configurations.
 
+Nextra v4 also needs these App Router files (adapt the imports to the chosen `src/` or root layout and pin compatible Nextra/Next versions in `bun.lock`):
+
+```tsx
+// site/app/layout.tsx
+import { Footer, Layout, Navbar } from "nextra-theme-docs";
+import { getPageMap } from "nextra/page-map";
+import "nextra-theme-docs/style.css";
+
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  return <html lang="en" dir="ltr"><body>
+    <Layout pageMap={await getPageMap()}
+      navbar={<Navbar logo={<b>Last Z Wiki</b>} />}
+      footer={<Footer>Last Z Wiki</Footer>}>
+      {children}
+    </Layout>
+  </body></html>;
+}
+```
+
+`site/app/[[...mdxPath]]/page.tsx` uses `generateStaticParamsFor("mdxPath")` and `importPage` from `nextra/pages`, rendering the imported MDX through the wrapper from `site/mdx-components.tsx`. That root component registry registers `SourceCite`, `Screenshot`, `StatBlock`, and `Aggregation`. Phase 0 must prove this route and a generated MDX page build as static HTML; the official [Nextra content-directory recipe](https://nextra.site/docs/file-conventions/content-directory) supplies the exact route boilerplate.
+
 ### 11.2 Content collection layout
 
 Nextra v4 uses an App Router content directory. The pipeline writes MDX into this tree:
@@ -1515,19 +1589,13 @@ site/content/
 │   ├── index.mdx                      # from templates/weapons/index.md
 │   ├── m4a1.mdx                       # from templates/weapons/m4a1.md
 │   ├── ak47.mdx
-│   └── _drafting-notes.md             # gap notes; excluded from content (see below)
 ├── enemies/
 │   ├── _meta.js
 │   └── ...
 └── ...
 ```
 
-**Files excluded from the Nextra content collection** (won't appear as pages or in search):
-
-- Any file whose name starts with `_` (Nextra convention) — covers `_meta.js` and `_drafting-notes.md`.
-- Any file listed in `contentDirExclude` of `next.config.mjs` (reserved hook; empty in MVP).
-
-The pipeline's writer always writes `_drafting-notes.md` with the leading underscore — the exclusion is automatic.
+Drafting notes live under `indexes/drafting-notes/`, outside the Nextra content directory. `_meta.js` is Nextra navigation metadata. The generated content tree contains only publishable MDX and `_meta.js` files; the build must fail if any unexpected Markdown file appears there.
 
 ### 11.3 `_meta.js` auto-generation
 
@@ -1593,7 +1661,7 @@ Pipeline behavior for `bun pipeline ingest image <path>` (and the inbox image fl
    - `site/public/media/<hash>/thumb.webp` (max 320px wide, quality 80)
    - `site/public/media/<hash>/md.webp` (max 800px wide, quality 82)
    - `site/public/media/<hash>/lg.webp` (max 1600px wide, quality 85)
-4. Write `sources/images/<hash>/source.json` with `assetPaths` pointing at all variants.
+4. Write `sources/images/<hash>/raw.ref.json` pointing at the committed original, then `source.json` with `rawPath: "raw.ref.json"`, `rawBytes` and `contentHash` for the original, and `assetPaths` for all variants.
 5. Run vision extraction (§5.3).
 
 MDX pages reference images via a thin wrapper component:
@@ -1608,12 +1676,7 @@ Images that live in repository but are **not** backed by a `sources/images/<hash
 
 ### 11.5 Search
 
-Nextra v4 ships with built-in FlexSearch indexing over MDX content. In MVP:
-
-- Search is enabled with default config.
-- Codeblocks are excluded from the index (`search: { codeblocks: false }`) — the wiki is content, not reference docs for code.
-- `_meta.js` and `_drafting-notes.md` are excluded automatically via the `_` prefix.
-- Upgrade path to Pagefind is left open for a future phase if FlexSearch relevance proves insufficient; no architectural coupling prevents the swap.
+Nextra v4 integrates with **Pagefind** for static search. Add `pagefind` as a `site/` dev dependency and define the site `build` script to run `next build` followed by `pagefind --site out --output-path out/_pagefind`. CI must check that `site/out/_pagefind/` exists. Pagefind indexes rendered HTML, so `indexes/drafting-notes/` never enters search. Configure Pagefind's selectors if code blocks or navigation text pollute results. See the [Nextra search setup](https://nextra.site/docs/guide/search).
 
 ### 11.6 Cloudflare Pages deployment
 
@@ -1624,6 +1687,7 @@ name: Build and deploy
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -1633,21 +1697,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
+      - run: bun pipeline audit
       - run: bun run --cwd site build
+      - run: test -d site/out/_pagefind
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
-        with:
-          apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          projectName: last-z-survival-shooter-wiki
-          directory: site/out
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          DEPLOY_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: bunx wrangler pages deploy site/out --project-name last-z-survival-shooter-wiki --branch "$DEPLOY_BRANCH"
 ```
 
 The workflow:
-- Does **not** run any pipeline commands. Deployment is purely Nextra build + upload.
+- Runs `pipeline audit` but does not ingest, extract, or write content. A failing audit blocks deployment.
 - Does not run the pipeline's LLM calls. LLM work happens locally before commit.
-- Runs on every push to `main`. PR previews are handled by Cloudflare Pages' automatic preview deployment (triggered on any branch push when linked to the repo).
+- Deploys the production branch on pushes to `main`. Pull requests from branches in this repository deploy to a Cloudflare Pages preview branch; forked PRs build and audit without receiving deployment secrets. `wrangler` is a pinned dev dependency, and this workflow is the sole deployment path (do not also enable automatic Git deployments for the same project).
 
 GitHub Pages fallback: swap the `Deploy to Cloudflare Pages` step for the standard `actions/deploy-pages@v4` flow. Set `basePath` appropriately via env.
 
@@ -1672,7 +1737,7 @@ This keeps the pipeline honest: anything an agent does is reproducible and audit
 3. **Standard workflows** — canonical recipes for common operations.
 4. **Safety rules** — commands that must never be run autonomously, files that must never be hand-edited.
 
-The file is committed and versioned. Changes to `AGENTS.md` are themselves stale-triggering inputs for page regeneration (see `agentsHash` in §8.2).
+The file is committed and versioned. Changes to `AGENTS.md` alter each page's input fingerprint (§8.2) and trigger regeneration.
 
 ### 12.3 Standard workflow recipes
 
@@ -1689,7 +1754,8 @@ The file is committed and versioned. Changes to `AGENTS.md` are themselves stale
      bun pipeline template new <path> --from-extractions
      (review and edit the generated template body)
 5. bun pipeline write --all-stale
-6. git status; stage changes; propose commit message to user
+6. bun pipeline index && bun pipeline audit
+7. git status; stage changes; propose commit message to user
 ```
 
 **Recipe B — Update wiki for a new season:**
@@ -1701,7 +1767,8 @@ The file is committed and versioned. Changes to `AGENTS.md` are themselves stale
    approved new topic: bun pipeline template new seasons/season-N --from-extractions
 5. Edit template bodies if needed based on user guidance.
 6. bun pipeline write --all-stale
-7. Summarize the change and request review.
+7. bun pipeline index && bun pipeline audit
+8. Summarize the change and request review.
 ```
 
 **Recipe C — Style/tone refactor:**
@@ -1718,7 +1785,7 @@ These recipes are not hardcoded in the pipeline — they are *documentation* Ope
 
 `AGENTS.md` prohibits the following agent behaviors:
 
-- **No force re-extraction without user consent.** `pipeline extract --all` or `pipeline reextract --all` cost real money (tens of dollars for a large corpus). The agent must ask before running them.
+- **No force re-extraction without user consent.** `pipeline extract --all` costs real money (tens of dollars for a large corpus). The agent must ask before running it.
 - **No hand-edits to generated files.** `site/content/**/*.mdx` (except inside `:protected:` blocks), `site/content/**/_meta.js`, and `indexes/**/*` are pipeline-owned. Edits there will be overwritten.
 - **No git force-push, no rewrites of main branch history, no deletion of `sources/**`** without explicit user instruction.
 - **No PR creation without the user's go-ahead.** Branch and commit freely; `gh pr create` only when the user says so.
@@ -1736,22 +1803,19 @@ The pipeline is complete without OpenCode. But OpenCode shortens the loop for th
 
 ### 12.6 Invocation pattern
 
-When `--writer opencode` is set, the `OpenCodeWriter` implementation invokes:
+When `--writer opencode` is set, the adapter creates a temporary working directory containing the assembled prompt and allowed context files. It invokes a pinned OpenCode release through its supported `run`, `--file`, `--model`, and `--format json` interface. For example:
 
 ```bash
 opencode run \
-  --prompt-file pipeline/prompts/write-page.md \
-  --context-file templates/<path>.md \
-  --context-file AGENTS.md \
-  --context-file <each cited extraction.md> \
-  --output-file site/content/<path>.mdx \
-  --model $MODEL_FORMAT \
-  --no-network
+  "Generate the single MDX page from the attached inputs." \
+  --file prompt.md --file template.md --file AGENTS.md \
+  --file extraction-1.md \
+  --model "$OPENCODE_MODEL_FORMAT" --format json
 ```
 
-`--no-network` prevents the agent from reaching beyond the provided context mid-write. The `write-page.md` prompt explicitly instructs the agent to produce exactly one file (the MDX page) and to never modify other files.
+The adapter parses the JSON event stream to collect the final page text; it never asks OpenCode to write into `site/content/`. It applies the same validation, protected-block restoration, and atomic replacement as the SDK writer. `OPENCODE_MODEL_FORMAT` is an OpenCode provider/model identifier and is configured separately from the OpenRouter model ID used by the SDK writer. The child process runs in an OS sandbox with read-only input files and outbound access limited to its configured model endpoint; source fetching and arbitrary web access are blocked. This is a requirement on the runner, not a CLI flag. If such a sandbox is unavailable, the command fails rather than claiming isolation.
 
-This keeps OpenCode-driven writing as deterministic as SDK-driven writing for the individual-page operation. OpenCode's broader agentic capabilities (multi-file edits, tool use) come into play only at the orchestration level, driven by the user's natural-language prompt to OpenCode — not inside the `write` step itself.
+The adapter bounds one page write to the provided context and returns a validated candidate. OpenCode's broader agent capabilities remain available only when a user invokes it separately to orchestrate the documented pipeline commands.
 
 ---
 
@@ -1764,7 +1828,7 @@ The wiki is publishing content derived from AI-assisted extraction and writing, 
 - The `main` branch is the source of truth for what's deployed.
 - All changes — template edits, source ingestions, extraction updates, generated page rewrites — land on `main` via pull request, reviewed by a human.
 - Direct pushes to `main` are discouraged but not technically blocked in MVP (single-maintainer repo). A branch protection rule requiring PR + review can be enabled any time without changing the pipeline.
-- The GitHub Action builds and deploys on every push to `main`. Cloudflare Pages' preview-URL-per-branch feature is used for PR previews automatically (no config needed beyond linking the repo in CF Pages).
+- The GitHub Action audits, builds, and deploys on every push to `main`. The same workflow deploys previews for pull requests from branches in this repository; forked PRs get build and audit checks without deployment secrets (§11.6).
 
 ### 13.2 What lives in a single PR
 
@@ -1781,7 +1845,7 @@ indexes/coverage.md                            (updated)
 templates/<possibly-new-paths>.md              (if new topics accepted)
 site/content/<affected-pages>.mdx              (regenerated)
 site/content/**/_meta.js                       (if template order/label changed)
-site/content/**/_drafting-notes.md             (if missing-source gaps flagged)
+indexes/drafting-notes/<page-path>.md          (if missing-source gaps flagged)
 ```
 
 All of these are text diffs. A reviewer can, within a single PR, see: the raw transcript, the structured extraction (and compare its claims to the raw), the updated coverage report, the new templates, the changed page prose, and the gap notes. End-to-end traceability in one review.
@@ -1793,7 +1857,7 @@ All of these are text diffs. A reviewer can, within a single PR, see: the raw tr
 | `templates/**` | `site/out/**` (next build output) |
 | `sources/**` (including `raw.*`, `extraction.md`, `source.json`) | `site/.next/**` |
 | `indexes/**` | `.cache/**` |
-| `site/content/**` (including `_drafting-notes.md`, `_meta.js`) | `node_modules/**` |
+| `site/content/**` (including `_meta.js`), `indexes/drafting-notes/**` | `node_modules/**` |
 | `site/components/**`, `site/public/**`, `site/lib/**` | `.env`, `.env.local` |
 | `pipeline/**` | `*.log` |
 | `AGENTS.md`, `README.md`, `docs/**` | `.opencode/**` (local opencode session data, if any) |
@@ -1802,7 +1866,7 @@ All of these are text diffs. A reviewer can, within a single PR, see: the raw tr
 
 Rationale reminders:
 - `site/content/**/*.mdx` is committed despite being generated, so reviews show the actual page diff and so the site is buildable without running the pipeline.
-- `_drafting-notes.md` is committed so gaps persist across runs and are visible in PRs.
+- `indexes/drafting-notes/**` is committed so gaps persist across runs and are visible in PRs.
 - `inbox/**` is committed because dropped notes/screenshots are authored content, not scratch data. Once ingested, inbox files *stay* there (they are the source material).
 
 ### 13.4 Auditable claim chain
@@ -1811,14 +1875,14 @@ For any statement on any generated page, a reviewer can trace:
 
 ```
 page line in site/content/weapons/m4a1.mdx
-   └── <SourceCite id="youtube/abc123xyz" /> or prose reference
+   └── <SourceCite id="youtube/abc123xyz" claim="c3" />
          └── sources/youtube/abc123xyz/extraction.md
-               └── "## weapons/m4a1" section, specific claim
+               └── "## weapons/m4a1" section, claim [c3]
                      └── [timestamp 2:34] in sources/youtube/abc123xyz/raw.txt
                            └── source.json.url → original YouTube video
 ```
 
-Each step is a committed file in the repository. No runtime lookups, no external databases. `pipeline audit` (§6.4) mechanically verifies that every link in this chain is valid.
+Each step is a committed file in the repository. No runtime lookups or external databases are required. `pipeline audit` (§6.4) mechanically verifies that IDs resolve and file hashes match. It checks that text timestamps or comment IDs appear in raw material; for images it checks that the original exists and that the region locator is well formed. It cannot establish that a claim faithfully interprets its evidence; that remains a PR review task.
 
 ### 13.5 Auditor workflows
 
@@ -1827,7 +1891,7 @@ Each step is a committed file in the repository. No runtime lookups, no external
 2. Read `extraction.md` changes; for any surprising claim, open the adjacent `raw.txt` / `raw.md` / `raw.json` and locate the evidence.
 3. Read `site/content/**/*.mdx` diffs; check that new prose corresponds to claims in cited extractions.
 4. Read `indexes/coverage.md` to see any gaps the writer flagged.
-5. Read `_drafting-notes.md` for explicit gap notes.
+5. Read `indexes/drafting-notes/` for explicit gap notes.
 6. Approve or request changes.
 
 **LLM auditor** (future, optional — not implemented in MVP):
@@ -1867,18 +1931,18 @@ The build is divided into phases that each produce a working, reviewable increme
 
 **Deliverables:**
 - `package.json` bun workspace root; `site/` and `pipeline/` workspace members created.
-- Next.js 15 + Nextra v4 initialized in `site/`; default theme config; single placeholder home page renders.
-- `next.config.mjs` configured for static export; `bun run --cwd site build` produces `site/out/`.
+- Compatible Next.js 15 + Nextra v4 versions pinned in `site/`; App Router layout, route, and MDX component registry render a placeholder home page.
+- `next.config.mjs` configured for static export; `bun run --cwd site build` produces `site/out/` and a Pagefind index.
 - `.github/workflows/build-and-deploy.yml` wired to Cloudflare Pages; empty wiki deploys on first push to `main`.
 - `templates/_category/` with category default files (weapons, enemies, maps, mechanics, seasons, strategies, lore) — frontmatter + voice-hint bodies.
 - `templates/index.md` for the landing page brief.
 - 2–3 hand-crafted seed templates as style references (e.g., one weapon, one enemy, one mechanic).
 - `AGENTS.md` v0 with site-wide rules, pipeline command summary, standard workflow recipes.
-- `pipeline/` skeleton with `cli.ts` (empty commands), `llm/openrouter.ts`, `llm/models.ts`, typed schemas in `llm/schemas.ts` for `Source`, `Extraction`, `Template`.
+- `pipeline/` skeleton with `cli.ts`, `llm/openrouter.ts`, `llm/models.ts`, typed schemas in `llm/schemas.ts` for `Source`, `Extraction`, `Template`. `pipeline audit` accepts the empty corpus and validates the Phase 0 tree; other commands may remain stubs.
 - `.env.example` with required variable names.
-- One hand-crafted example `extraction.md` per source type, for testing the writer against.
+- One hand-crafted example extraction per source type under `docs/fixtures/` for future writer checks; fixtures are outside the live source registry.
 
-**Acceptance:** visit the deployed Cloudflare Pages URL and see a live (empty) site with category nav in the sidebar. `bun pipeline --help` lists all planned commands (stubs only).
+**Acceptance:** visit the deployed Cloudflare Pages URL and see a live (empty) site with category nav in the sidebar. `bun pipeline --help` lists all planned commands, `pipeline audit` succeeds, and `site/out/_pagefind/` exists.
 
 ### Phase 1 — YouTube vertical slice (~1–2 days)
 
@@ -1891,7 +1955,8 @@ The build is divided into phases that each produce a working, reviewable increme
 - `pipeline/src/util/git.ts` — branch + commit helpers.
 - Writer prompt in `pipeline/prompts/write-page.md`.
 - Hash-based caching implemented; re-running `ingest` on the same URL is a no-op.
-- `pipeline index` rebuilds indexes from filesystem scan.
+- `pipeline template new --from-extractions` and deterministic claim promotion needed by the first-page flow.
+- `pipeline index` rebuilds indexes from filesystem scan; `pipeline audit` checks source, claim, and page integrity before the first PR.
 
 **Acceptance:**
 ```
@@ -1900,9 +1965,10 @@ bun pipeline template new weapons/m4a1 --from-extractions
 # edit the generated template body if needed
 bun pipeline write weapons/m4a1
 bun pipeline index
+bun pipeline audit
 git status
 ```
-Produces: a branch containing source files, an extraction, a template, one generated page, and updated indexes. All reviewable as one PR. Page renders correctly in `bun run --cwd site dev`.
+Produces: a branch containing source files, an extraction, a template, one generated page, and updated indexes. All reviewable as one PR. The page renders correctly in the static export, its citation resolves to a claim and raw locator, and Pagefind indexes it.
 
 ### Phase 1.5 — Curator + scaffolders (~½ day)
 
@@ -1910,7 +1976,7 @@ Produces: a branch containing source files, an extraction, a template, one gener
 
 **Deliverables:**
 - `pipeline/src/plan/curator.ts` — implements §9.
-- `pipeline/src/templates/scaffolder.ts` — `template new` and `template new --from-extractions`.
+- `pipeline/src/templates/scaffolder.ts` — improve the Phase 1 scaffolders with curator suggestions and additional category defaults.
 - `pipeline/src/templates/linter.ts` — `template check`.
 - `indexes/coverage.md` generation wired up.
 
@@ -1957,7 +2023,7 @@ Each source gets its own acceptance test: one real URL of that type ingests, ext
 **Goal:** long-running wiki hygiene commands.
 
 **Deliverables:**
-- `pipeline audit` — implements §6.4 audit.
+- Extend `pipeline audit` from Phase 1 with corpus-wide orphan, duplicate URL, and taxonomy checks (§6.4).
 - `pipeline verify-citations` — HTTP HEAD on every committed source URL; reports broken links.
 - `pipeline refresh` — combined re-fetch + re-extract-stale + re-write-stale flow.
 - `pipeline affected <sourceId>` — read-only source-to-pages lookup.
@@ -1969,7 +2035,7 @@ Each source gets its own acceptance test: one real URL of that type ingests, ext
 Deferred until earlier phases produce real-world friction worth addressing:
 
 - Scheduled GitHub Action for periodic `pipeline refresh` (weekly cadence).
-- Pagefind swap-in if FlexSearch search relevance is weak.
+- Pagefind relevance tuning if searches omit useful content.
 - Interactive MDX components (damage calculators, loadout planner).
 - Structured game data tables under `data/*.yaml` + MDX helpers.
 - LLM-assisted audit (`pipeline audit-llm`) verifying claim-to-evidence alignment.
@@ -2040,15 +2106,15 @@ This section captures deliberate deferrals — decisions that we chose not to se
 - Quarterly full audit as a batch job.
 - Rely on human PR review indefinitely.
 
-### 15.6 Pagefind vs FlexSearch
+### 15.6 Search relevance
 
-**Current position:** FlexSearch (Nextra default).
+**Current position:** Pagefind indexes the static export after the Nextra build.
 
-**Trigger to revisit:** if search relevance is poor in practice, or if search needs to cover fields FlexSearch doesn't (e.g. source citations, frontmatter tags).
+**Trigger to revisit:** if search relevance is poor in practice, or if search needs to cover structured fields such as source citations or frontmatter tags.
 
 **Options on the table:**
-- Swap to Pagefind — higher quality, small static-index, slightly more CI setup.
-- Stick with FlexSearch; tune the index config.
+- Tune Pagefind indexing selectors and metadata.
+- Add a separate structured search index for claims and source metadata if page text alone is insufficient.
 
 ### 15.7 Image repository growth
 
@@ -2085,7 +2151,7 @@ This section captures deliberate deferrals — decisions that we chose not to se
 
 ### 15.10 Protected-block model vs full section-level override
 
-**Current position:** human-authored prose in generated pages survives regen only inside `<!-- :protected:start name --><!-- :protected:end name -->` blocks (§8.5). All other prose is overwritten.
+**Current position:** human-authored prose in generated pages survives regeneration only inside `{/* :protected:start name */}` and `{/* :protected:end name */}` blocks (§8.5). All other prose is overwritten.
 
 **Trigger to revisit:** if "I want to hand-write this section and never have the writer touch it" becomes a frequent need.
 
@@ -2111,5 +2177,3 @@ The pipeline exposes a deterministic CLI usable by a human directly or driven by
 MVP ships in seven phases, each producing a mergeable improvement. Phase 0 deploys an empty site. Phase 1 produces the first real page from a real YouTube video. By Phase 3 the full authoring loop — including image extraction and agent-driven orchestration — is operational.
 
 Open questions and deferrals are cataloged in §15 with explicit triggers for revisiting each one.
-
-
